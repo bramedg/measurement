@@ -16,6 +16,17 @@ class MeasurementMetadata(BaseModel):
     user: str
 
 
+class BaseRequest(BaseModel):
+    metadata: MeasurementMetadata
+    start_time: datetime
+    end_time: datetime
+
+class FetchMeasurementRequest(BaseRequest):
+    action: str
+
+class DeleteMeasurementRequest(BaseRequest):
+    action: str
+
 class RecordMeasurementRequest(BaseModel):
     action: str
     value: float
@@ -69,6 +80,46 @@ class AMQPRPCService:
 # MongoDB Setup (Replace with your credentials)
 client = pymongo.MongoClient("mongodb://192.168.68.253")
 db = client["measurements"]
+
+def delete_measurements(request: DeleteMeasurementRequest):
+    """Deletes measurements within the specified time range and for the given user (if provided)."""
+    collection_name = f"{request.metadata.appName}_{request.metadata.measurementName}_measurements"
+    filter_criteria = {
+        "timestamp": {"$gte": request.start_time, "$lte": request.end_time},
+    }
+    if request.metadata.user:
+        filter_criteria["metadata.user"] = request.metadata.user
+
+    try:
+        result = db[collection_name].delete_many(filter_criteria)
+        return {"message": f"Deleted {result.deleted_count} measurements"}
+    except OperationFailure as e:
+        return {"error": f"Error deleting measurements: {e}"}
+
+def fetch_measurements(request: FetchMeasurementRequest):
+    """Fetches raw (non-interpolated) measurement data based on the request."""
+    collection_name = f"{request.metadata.appName}_{request.metadata.measurementName}_measurements"
+
+    # Construct the filter criteria for the query
+    filter_criteria = {
+        "timestamp": {"$gte": request.start_time, "$lte": request.end_time},
+    }
+    if request.metadata.user:
+        filter_criteria["metadata.user"] = request.metadata.user
+    
+
+    try:
+        # Find matching measurements
+        cursor = db[collection_name].find(
+            filter_criteria,
+            projection={"_id": 0, "timestamp": 1, "value": 1, "metadata.user": 1},  # Only return necessary fields
+        )
+
+        # Convert to list of dictionaries and return
+        results = list(cursor)
+        return results
+    except OperationFailure as e:
+        return {"error": f"Error fetching measurements: {e}"}
 
 
 def record_measurement(request: RecordMeasurementRequest):
@@ -181,6 +232,14 @@ def handle_measurement(request_data: dict):
         elif request_data['action'] == "query":
             request = QueryWithInterpolationRequest(**request_data)
             result = query_with_interpolation(request)
+            return result
+        elif request_data['action'] == "delete":
+            request = DeleteMeasurementRequest(**request_data)
+            result = delete_measurements(request)
+            return result
+        elif request_data["action"] == "fetch":
+            request = FetchMeasurementRequest(**request_data)
+            result = fetch_measurements(request)
             return result
         else:
             return {"error": "Action not found"}
